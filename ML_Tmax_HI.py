@@ -1,9 +1,9 @@
 #!/usr/bin/python
 """
 Script for Machine Learning approach to week 2 Extreme Heat
-Using GEFSv12 Tmax to give a more skillful Tmax forecast
-Target= Week 2 Tmax (any day +8 to +14- day independent)
-Future Target= Week 2 Tmax (dependecy on forecast day)(each forecast day has different weights)
+Using GEFSv12 Tmax to give a more skillful Tmax/HI forecast
+Target= Week 2 Tmax/HI (any day +8 to +14- day independent)
+Future Target= Week 2 Tmax/HI (dependecy on forecast day)(each forecast day has different weights)
 original author: @Greg Jennrich
 """
 #ML inputs
@@ -82,47 +82,52 @@ def Add_nan_mask(map_1d):
 """
 Read in Evan's GEFSv12 data and his obs data For Tmax
 """
-#fcst1='/cpc/gth/GTH_DATABASE/WEEK2_HEAT/GEFS_SEHOS/GEFS_v12_reforecast_airT.nc'
-fcst1='/cpc/gth/GTH_DATABASE/WEEK2_HEAT/GEFS_SEHOS/GEFS_v12_reforecast_airT.nc'
-t_max_f=Ds(fcst1)['max_air_temp_2m'];intal_date=Ds(fcst1)['issue_date']
-#obs1='/cpc/home/evan.oswald/R1_SEHOS/CDAS_1x1_reanalysis_airT.nc'
-obs1='/cpc/home/evan.oswald/R1_SEHOS/CDAS_1x1_reanalysis_airT.nc'
-obs=Ds(obs1)['max_air_temp_2m'];obs_date=Ds(obs1)['issue_date']
+var='HI'#Tmax or HI
+if var=='Tmax':
+	fcst1='/cpc/gth/GTH_DATABASE/WEEK2_HEAT/GEFS_SEHOS/GEFS_v12_reforecast_airT.nc'
+	obs1='/cpc/home/evan.oswald/R1_SEHOS/CDAS_1x1_reanalysis_airT.nc'
+	forcast=Ds(fcst1)['max_air_temp_2m'];intal_date=Ds(fcst1)['issue_date']
+	obs=Ds(obs1)['max_air_temp_2m'];obs_date=Ds(obs1)['issue_date']
+elif var=='HI':
+	fcst1='/cpc/gth/GTH_DATABASE/WEEK2_HEAT/GEFS_SEHOS/GEFS_v12_reforecast_HeatIndex.nc'
+	obs1='/cpc/home/evan.oswald/R1_SEHOS/CDAS_1x1_reanalysis_HeatIndex.nc'
+	forcast=Ds(fcst1)['max_heat_index_2m'];intal_date=Ds(fcst1)['issue_date']
+	obs=Ds(obs1)['max_heat_index_2m'];obs_date=Ds(obs1)['issue_date']
 
 #Get datetime objects for time
-t_max_f['time']=Get_dateime_date(intal_date)
+forcast['time']=Get_dateime_date(intal_date)
 obs['time']=Get_dateime_date(obs_date)
 #Get dates for the forecast
-t_max_f['fcst_date']=np.arange(8,15);t_max_f['ensemble']=np.arange(1,6)#give the day+ forecast number
-t_max_f['longitude']=np.arange(231,302);obs=obs[:,::-1,:]#get the same lon and lats!
+forcast['fcst_date']=np.arange(8,15);forcast['ensemble']=np.arange(1,6)#give the day+ forecast number
+forcast['longitude']=np.arange(231,302);obs=obs[:,::-1,:]#get the same lon and lats!
 
 #test
-Get_forecast_dates(t_max_f['time'],0)
+Get_forecast_dates(forcast['time'],0)
 
 """
 Cut down to 2000-2020, to remove 'bad' gefs data
 Remove missing Obseravtions (June and July 2015)
 """
-t_max_f=t_max_f.sel(time=slice(date(2000,1,1),date(2020,12,31)))
+forcast=forcast.sel(time=slice(date(2000,1,1),date(2020,12,31)))
 
 missing_idx=np.where(np.isnan(obs[2,2,:].values))[0]#known good point
 missing_dates=pd.DatetimeIndex(obs.time.isel(time=missing_idx).values)
 obs=obs.isel(time=np.delete(np.arange(0,obs.time.values.shape[0]),missing_idx))#remove missing dates
 
 """
-Now take the ens mean (just to be simple) and connect forecast dates with obs dates
+Now take each ensemeble member and connect forecast dates with obs dates
 24255= 3465 int dates * 7 forecast dates
 """
 ens_mean=False
 if ens_mean:
-	t_max_ens_mean=t_max_f.mean(dim='ensemble')
+	t_max_ens_mean=forcast.mean(dim='ensemble')
 	inputs=t_max_ens_mean.stack(fcst=('time','fcst_date'))
 else:
-	inputs=t_max_f.stack(fcst=('time','fcst_date','ensemble'))
+	inputs=forcast.stack(fcst=('time','fcst_date','ensemble'))
 input_dates=[]
 for d in tqdm(range(inputs.shape[-1])):
-	#date_add=pd.DatetimeIndex(inputs.time.values)[d]+timedelta(int(inputs.fcst_date.values[d]))
-	date_add=pd.DatetimeIndex(inputs.fcst.time.values)[d]
+	date_add=pd.DatetimeIndex(inputs.time.values)[d]+timedelta(int(inputs.fcst_date.values[d]))
+	#date_add=pd.DatetimeIndex(inputs.fcst.time.values)[d]
 	input_dates.append(date_add)
 
 input_dates_full=pd.DatetimeIndex(np.asarray(input_dates))
@@ -169,7 +174,7 @@ def rmse_metric(y_true, y_pred):
 batch_size = 256
 layers = 3 #experiment, start with 2, work upward
 nodes = 4 #, work up in increments of 10
-epochs = 50 #50-ens mean #10-with ens
+epochs = 3#HI-3, Tmax-25
 activation_function =tf.nn.tanh
 from tensorflow.keras.models import Model
 input1 = Input(shape=(1306,)) #GEFS temp
@@ -181,10 +186,11 @@ Model.summary()#print a summary of the model
 #compile
 optimizer = 'adam'#keras.optimizers.RMSprop(0.0001)
 Model.compile(loss='mse',optimizer=optimizer,metrics=['mae',rmse_metric])#run_eagerly=True
-t_board = [keras.callbacks.TensorBoard(log_dir='/cpc/home/gjennrich/my_tf_dir/Tmax_ens_member_2layer',histogram_freq=1,embeddings_freq=1,)]
+#t_board = [keras.callbacks.TensorBoard(log_dir='/cpc/home/gjennrich/my_tf_dir/'+var+'_ens_member_2layer',histogram_freq=1,embeddings_freq=1,)]
 training_output=Model.fit(x=input_train,y=target_train,
 				validation_data=(input_test,target_test),
-				batch_size=batch_size,epochs=epochs, shuffle=False, verbose=1,callbacks=[t_board])
+				batch_size=batch_size,epochs=epochs, shuffle=False, verbose=1)#,callbacks=[t_board])
+Model.save(project_dir+'Scripts/ML_heat/'+var+'_ALL_Model')#save the model for future use
 # #evaluate the testing (validation) data
 # evaluate_output=Model.evaluate(x=input_test,y=target_test,batch_size=batch_size)
 # #evaluate with test data
@@ -266,9 +272,9 @@ from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
 import matplotlib.gridspec as gridspec
 
 crs = ccrs.PlateCarree(central_longitude=360)
-cmap = plt.cm.YlOrRd
+cmap = plt.cm.hot_r#YlOrRd
 def plot_background(ax1):
-	#ax1.set_extent([-35, -100, 25.0, 53], crs=ccrs.PlateCarree())
+	ax1.set_extent([-55, -130, 21.0, 50], crs=ccrs.PlateCarree())
 	ax1.xaxis.set_major_formatter(LongitudeFormatter(zero_direction_label=True))
 	ax1.yaxis.set_major_formatter(LatitudeFormatter())
 	ax1.add_feature(cfeature.COASTLINE, linewidth=0.5)
@@ -283,17 +289,18 @@ ax1=axarr[0];ax2=axarr[1];ax3=axarr[2];
 plot_background(ax1);plot_background(ax2);plot_background(ax3)
 pick_date=-50#date(2011,7,29)
 #print_skill=[hss_NN[pick_date],hss_model_ens[pick_date],hss_LR[pick_date]]
-ax1.set_title('GEFSv12 Tmax Forecast RMSE: '+str(round(rmse_GEFS[pick_date],2)))
+ax1.set_title('GEFSv12 '+var+' Forecast RMSE: '+str(round(rmse_GEFS[pick_date],2)))
 cf1 = ax1.contourf(input_2d.longitude, input_2d.latitude, input_2d.isel(time=pick_date).transpose(), 17,cmap=cmap,levels=np.linspace(60,120,17),vmax=120, vmin=60,extend='both')
-ax2.set_title('NN Corrected Tmax Forecast RMSE: '+str(round(rmse[pick_date],2)))
+ax2.set_title('NN Corrected '+var+' Forecast RMSE: '+str(round(rmse[pick_date],2)))
 cf2 = ax2.contourf(nn_map.longitude,nn_map.latitude,  nn_map.isel(time=pick_date).transpose(),17,cmap=cmap,levels=np.linspace(60,120,17),vmax=120, vmin=60,extend='upper')
 ax3.set_title('Observation: '+pd.DatetimeIndex(target_2d.time.values)[pick_date].strftime('%b %d %Y'))
 cf3 = ax3.contourf(target.longitude, target.latitude,  target_2d.isel(time=pick_date).transpose(), 17,cmap=cmap,levels=np.linspace(60,120,17),vmax=120, vmin=60,extend='both')
-#cbar = fig.colorbar(cf1, orientation='horizontal', ax=ax2,extend='both')# shrink=.5)
-#cbar.outline.set_edgecolor('black');cbar.outline.set_linewidth(.5)
-#cbar.ax.set_xlabel('Anomaly (C)', fontsize='x-large')
+cax = fig.add_axes([0.8, 0.25, 0.04, 0.5])
+cbar = fig.colorbar(cf3, cax=cax,extend='both')# shrink=.5)
+cbar.outline.set_edgecolor('black');cbar.outline.set_linewidth(.5)
+cbar.ax.set_xlabel(var+' (F)', fontsize='x-large')
 #plt.legend()
-fig.suptitle('Week 2 Tmax Forecast', fontsize='18')
+fig.suptitle('Week 2 '+var+' Forecast', fontsize='18')
 #plt.savefig(project_dir+'model_NN_NN2_obs_prob_ex.png')
 plt.show()
 
@@ -302,20 +309,20 @@ RMSE Map
 """
 fig, axarr = plt.subplots(2, 1, figsize=(14, 8), subplot_kw={'projection': crs}) #make the map bigger than the table
 #hemispheric view
-ax1=axarr[0];ax2=axarr[1];
-
+land_mask_fix=input_2d[0,:,:].interp(latitude=np.arange(19.5,50.5,1))#fix point centering
+ax1=axarr[0];ax2=axarr[1]
 plot_background(ax1);plot_background(ax2)
-ax1.set_title('GEFSv12 HI Forecast RMSE: '+str(round(np.nanmean(rmse_GEFS),2)),fontsize='18')
-cf1 = ax1.contourf(input_2d.longitude, input_2d.latitude, gefs_maps.transpose(), 17,cmap=cmap,levels=np.linspace(0,15,11),vmax=15, vmin=0,extend='max')
-ax2.set_title('NN Corrected HI Forecast RMSE: '+str(round(np.nanmean(rmse),2)),fontsize='18')
-cf2 = ax2.contourf(nn_map.longitude,nn_map.latitude, NN_maps.transpose(),17,cmap=cmap,levels=np.linspace(0,15,11),vmax=15, vmin=0,extend='max')
+ax1.set_title('GEFSv12 '+var+' Forecast RMSE: '+str(round(np.nanmean(rmse_GEFS),2)),fontsize='18')
+cf1 = ax1.pcolormesh(land_mask_fix.longitude, land_mask_fix.latitude, gefs_maps.transpose(),cmap=cmap,vmax=18, vmin=2)
+ax2.set_title('NN Corrected '+var+' Forecast RMSE: '+str(round(np.nanmean(rmse),2)),fontsize='18')
+cf2 = ax2.pcolormesh(land_mask_fix.longitude,land_mask_fix.latitude, NN_maps.transpose(),cmap=cmap,vmax=18, vmin=2)
 cax = fig.add_axes([0.8, 0.25, 0.04, 0.5])
 cbar = fig.colorbar(cf1, cax=cax,extend='max')# shrink=.5)
 cbar.outline.set_edgecolor('black');cbar.outline.set_linewidth(.5)
 cbar.ax.set_ylabel('RMSE', fontsize='x-large')
-#plt.legend()
-fig.suptitle('Week 2 Heat Index Forecast\n(Any Day, any Ens Member)', fontsize='20')
-plt.savefig('heat_index_rmse_map_ens_members.png')
+fig.subplots_adjust(top=.85)
+fig.suptitle('Week 2 '+var+' Forecast\n(Any Day, any Ens Member)', fontsize='20')
+plt.savefig(var+'_rmse_map_ens_members.png')
 plt.show()
 
 
@@ -348,3 +355,469 @@ full_mask=xr.Dataset({
 	coords={"lon":target.longitude.values, "lat":target.latitude.values})
 full_mask.to_netcdf('/cpc/home/gjennrich/Scripts/ML_heat/full_mask.nc',format='NETCDF4')
 
+
+
+
+
+
+
+
+
+"""
+Train and test the detministic NN model
+Inputs:
+-GEFS Temp forecast
+-ECMWF Temp forecast
+-GEFS z200 PCs
+-ECWMF z200 PCs
+Target: Week 3/4 observed Temps
+
+Save training and testing to tf_dir to pull up in TensorBoard (comment out if unwanted)
+"""
+#HSS metric to be tracked in the training/testing
+"""
+This does not match the HSS output from the loop:
+-The model output here is not rescaled
+-The observations are not rescaled
+"""
+def hss_metric(y_true, y_pred):
+	conus_domain=get_conus_mask(2.5)#hard code the conus in here
+	conus_domain=K.flatten(conus_domain.transpose())#transpose so we have the same direction as the cos_map
+	y_pred_fitted=y_pred#scaler_temp2.inverse_transform(y_pred.numpy())#[0:]
+	y_true_fitted=y_true
+	#coslat=K.cos(np.deg2rad((np.zeros((45,25))+np.arange(15,75.5,2.5)).transpose()))
+	coslat=K.cos(np.deg2rad(np.arange(15,75.5,2.5)))
+	cos_map=K.flatten(np.zeros((25,45))+coslat[...,np.newaxis])#map of cos values to weight points
+	heidke=K.sign(y_pred_fitted*y_true_fitted)
+	heidke=(heidke+1)/2 #makes -1 values (wrong forecast) 0
+	heidke_good=heidke*conus_domain
+	cos_good=K.cast(cos_map,tf.float32)*conus_domain
+	H=tf.reduce_sum((heidke_good*cos_good),-1);T=tf.reduce_sum(cos_good,-1); E=T/2
+	hss=(100*(H-E)/(T-E))
+	loss=hss
+	#tf.print(hss)
+	return loss
+"""
+Scale all inputs and outputs (-1 to 1)
+"""
+scaler_pc= MinMaxScaler(feature_range=(-1,1))
+pcs_scaled_ECMWF= scaler_pc.fit_transform(ECMWF_pcs)
+scaler_pc= MinMaxScaler(feature_range=(-1,1))
+pcs_scaled_GEFS= scaler_pc.fit_transform(GEFS_pcs)
+#scale model temp forecast, ECMWF
+combo_ds_gr=ECMWF_temp_hindcast.sel(int_date=date_list)#aline dates
+scaler_model= MinMaxScaler(feature_range=(-1,1))
+model_temp_2D=combo_ds_gr.tmean.stack(point=('lat','lon'))
+model_temp_2D['scaled_2d']=(['int_date','point'],scaler_model.fit_transform(model_temp_2D))
+model_temp_scaled_ECMWF=model_temp_2D['scaled_2d']
+#GEFS
+combo_ds_gr=GEFS_temp_hindcast.sel(int_date=date_list)#aline dates
+scaler_model= MinMaxScaler(feature_range=(-1,1))
+model_temp_2D=combo_ds_gr.tmean.stack(point=('lat','lon'))
+model_temp_2D['scaled_2d']=(['int_date','point'],scaler_model.fit_transform(model_temp_2D))
+model_temp_scaled_GEFS=model_temp_2D['scaled_2d']
+#scale observations
+output_anomalies_2d=(output_anomalies).stack(point=('lat','lon'))
+scaler_temp= MinMaxScaler(feature_range=(-1,1))
+output_anomalies_2d['scaled_2d']=(['date','point'],scaler_temp.fit_transform(output_anomalies_2d))
+#temp_anomalies_2d['scaled_2d']=(['date','point'],temp_anomalies_2d/temp_anomalies_2d.std(dim='date'))
+output_scaled=output_anomalies_2d['scaled_2d']#.unstack('point')
+"""
+# - - - - - - - - - - - Train - - - - - - - - - - - - #
+Determine which samples are training and which are testing
+Random has shown best skill
+"""
+random_ints=np.arange(0,251);np.random.shuffle(random_ints)
+train_ints=random_ints[:200];test_ints=random_ints[200:]#np.concatenate((np.arange(0,100),np.arange(151,251)));test_ints=np.arange(100,151)
+#train_ints=np.concatenate((np.arange(0,100),np.arange(151,251)));test_ints=np.arange(100,151)
+train_pcs_ECMWF=pcs_scaled_ECMWF[train_ints,:]
+train_pcs_GEFS=pcs_scaled_GEFS[train_ints,:]
+train_model_temp_ECMWF=model_temp_scaled_ECMWF[train_ints,:]
+train_model_temp_GEFS=model_temp_scaled_GEFS[train_ints,:]
+train_predictand=output_scaled[train_ints,:]
+
+test_pcs_ECMWF=pcs_scaled_ECMWF[test_ints,:]#51 or 66
+test_pcs_GEFS=pcs_scaled_GEFS[test_ints,:]#51 or 66
+test_model_temp_ECMWF=model_temp_scaled_ECMWF[test_ints,:]
+test_model_temp_GEFS=model_temp_scaled_GEFS[test_ints,:]
+test_predictand=output_scaled[test_ints,:]#51 or 66
+
+"""
+Deterministic NN Model (ANN)
+"""
+#set parmameters
+model_type='ANN'
+epochs = 25#120
+batch_size=200
+from tensorflow.keras.models import Model
+# define two sets of inputs
+inputA1 = Input(shape=(1125,)) #GEFS temp
+inputA2 = Input(shape=(1125,)) #ECMWF temp
+inputB1 = Input(shape=(8,)) #GEFS PCs
+inputB2 = Input(shape=(8,)) #ECMWF PCs
+# the first branch operates on the first input (Temp forecasts)
+x1 = Dense(1125, activation="tanh")(inputA1)
+x1 = Model(inputs=inputA1, outputs=x1)
+Dropout(0.3)
+x2 = Dense(1125, activation="tanh")(inputA2)
+x2 = Model(inputs=inputA2, outputs=x2)
+Dropout(0.3)
+# the second branch opreates on the second input (PCs)
+y1 = Dense(20, activation="tanh")(inputB1)
+y1 = Dense(200, activation="tanh")(y1)
+y1 = Dense(2000, activation="tanh")(y1)
+y1 = Model(inputs=inputB1, outputs=y1)
+Dropout(0.3)
+y2 = Dense(20, activation="tanh")(inputB2)
+y2 = Dense(200, activation="tanh")(y2)
+y2 = Dense(2000, activation="tanh")(y2)
+y2 = Model(inputs=inputB2, outputs=y2)
+Dropout(0.3)
+# combine the output of the 4 inputs
+combined1 = concatenate([x1.output, x2.output])
+combined2 = concatenate([y1.output, y2.output])
+combined3 = concatenate([combined1, combined2])
+# combined outputs
+z = Dense(1125, activation="tanh")(combined3)
+# our model will accept the inputs of the two branches and
+# then output a single value
+Model = Model(inputs=[x1.input,x2.input, y1.input,y2.input], outputs=z)
+Model.summary()#print a summary of the model
+#compile
+optimizer = 'adam'#keras.optimizers.RMSprop(0.0001)
+Model.compile(loss='mse',optimizer=optimizer,metrics=['mae',hss_metric])
+
+#TensorBoard line to save the model metrics; Change the name of the file if you like
+t_board = [keras.callbacks.TensorBoard(log_dir='./my_tf_dir/ANN_'+datetime.now().strftime("%Y%m%d-%H:%M:%S"),histogram_freq=1,embeddings_freq=1)]
+training_output=Model.fit(x=[train_model_temp_ECMWF,train_model_temp_GEFS,train_pcs_ECMWF,train_pcs_GEFS],y=train_predictand,
+				validation_data=([test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS],test_predictand),
+				batch_size=batch_size,epochs=epochs, shuffle=True, verbose=1,callbacks =[t_board])
+#evaluate the testing (validation) data
+evaluate_output=Model.evaluate(x=[test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS],y=test_predictand,batch_size=batch_size,callbacks =[t_board])
+
+#HSS for testing data
+sample_num=51
+test_prediction=Model.predict([test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS])
+#unscale
+test_forecasts=scaler_temp.inverse_transform(test_prediction).reshape((sample_num,lon_c,lat_c),order='F') #
+#obs for the test forecasts
+test_obs=output_anomalies.values[test_ints,:,:]#.reshape((sample_num,lon_c,lat_c),order='F')
+#score the samples
+hss_NN=np.zeros(sample_num)
+for day in range(sample_num):
+	hss=HSS_calc(test_forecasts[day,:,:],test_obs[day,:,:],US_mask,np.arange(15, 75.5,degree))
+	hss_NN[day]=hss
+print(hss_NN.mean())
+################################################################################
+
+################################################################################
+"""
+Train and test the Probabilistic NN model
+Inputs:
+-GEFS Temp forecast
+-ECMWF Temp forecast
+-GEFS z200 PCs
+-ECWMF z200 PCs
+Target: Week 3/4 observed Temps
+
+Save training and testing to tf_dir to pull up in TensorBoard (comment out if unwanted)
+"""
+#
+"""
+Custom HSS metric to be tracked in the training/testing
+"""
+def hss_metric(y_true, y_pred):
+	conus_domain=get_conus_mask(2.5)#hard code the conus in here
+	conus_domain=K.flatten(conus_domain.transpose())#transpose so we have the same direction as the cos_map
+	y_pred_fitted= (K.round(y_pred)-.01)
+	y_true_fitted=(y_true*2.0)-1.0 #now -1 and 1
+	#coslat=K.cos(np.deg2rad((np.zeros((45,25))+np.arange(15,75.5,2.5)).transpose()))
+	coslat=K.cos(np.deg2rad(np.arange(15,75.5,2.5)))
+	cos_map=K.flatten(np.zeros((25,45))+coslat[...,np.newaxis])#map of cos values to weight points
+	heidke=K.sign(y_pred_fitted*y_true_fitted)
+	heidke=(heidke+1)/2 #makes -1 values (wrong forecast) 0
+	heidke_good=heidke*conus_domain
+	cos_good=K.cast(cos_map,tf.float32)*conus_domain
+	H=tf.reduce_sum((heidke_good*cos_good),-1);T=tf.reduce_sum(cos_good,-1); E=T/2
+	hss=(100*(H-E)/(T-E))
+	loss=hss
+	#tf.print(hss)
+	return loss
+
+"""
+Scale all inputs and outputs (-1 to 1)
+"""
+scaler_pc= MinMaxScaler(feature_range=(-1,1))
+pcs_scaled_ECMWF= scaler_pc.fit_transform(ECMWF_pcs)
+scaler_pc= MinMaxScaler(feature_range=(-1,1))
+pcs_scaled_GEFS= scaler_pc.fit_transform(GEFS_pcs)
+#scale model temp forecast, ECMWF
+combo_ds_gr=ECMWF_temp_hindcast.sel(int_date=date_list)#aline dates
+scaler_model= MinMaxScaler(feature_range=(-1,1))
+model_temp_2D=combo_ds_gr.tmean.stack(point=('lat','lon'))
+model_temp_2D['scaled_2d']=(['int_date','point'],scaler_model.fit_transform(model_temp_2D))
+model_temp_scaled_ECMWF=model_temp_2D['scaled_2d']
+#GEFS
+combo_ds_gr=GEFS_temp_hindcast.sel(int_date=date_list)#aline dates
+scaler_model= MinMaxScaler(feature_range=(-1,1))
+model_temp_2D=combo_ds_gr.tmean.stack(point=('lat','lon'))
+model_temp_2D['scaled_2d']=(['int_date','point'],scaler_model.fit_transform(model_temp_2D))
+model_temp_scaled_GEFS=model_temp_2D['scaled_2d']
+
+output_anomalies_2d=(output_anomalies).stack(point=('lat','lon'))
+output_scaled=xr.where(output_anomalies_2d>0,1,0)#output_anomalies_2d['scaled_2d']#.unstack('point')
+"""
+# - - - - - - - - - - - Train - - - - - - - - - - - - #
+Determine which samples are training and which are testing
+Random has shown best skill
+Uncomment the 'random_ints' line if running independently from the Deterministic NN,
+	otherwise lets keep the same train/testing dates
+"""
+# random_ints=np.arange(0,251);np.random.shuffle(random_ints)
+# train_ints=random_ints[:200];test_ints=random_ints[200:]#np.concatenate((np.arange(0,100),np.arange(151,251)));test_ints=np.arange(100,151)
+#train_ints=np.arange(51,251);test_ints=np.arange(0,51)#train_ints=np.concatenate((np.arange(0,100),np.arange(151,251)));test_ints=np.arange(100,151)
+train_pcs_ECMWF=pcs_scaled_ECMWF[train_ints,:]
+train_pcs_GEFS=pcs_scaled_GEFS[train_ints,:]
+train_model_temp_ECMWF=model_temp_scaled_ECMWF[train_ints,:]
+train_model_temp_GEFS=model_temp_scaled_GEFS[train_ints,:]
+train_predictand=output_scaled[train_ints,:]
+
+test_pcs_ECMWF=pcs_scaled_ECMWF[test_ints,:]#51 or 66
+test_pcs_GEFS=pcs_scaled_GEFS[test_ints,:]#51 or 66
+test_model_temp_ECMWF=model_temp_scaled_ECMWF[test_ints,:]
+test_model_temp_GEFS=model_temp_scaled_GEFS[test_ints,:]
+test_predictand=output_scaled[test_ints,:]#51 or 66
+
+"""
+Probabilistic NN Model (prob)
+"""
+model_type='prob'
+epochs = 25
+batch_size=200
+from tensorflow.keras.models import Model
+# define two sets of inputs
+inputA1 = Input(shape=(1125,)) #GEFS temp
+inputA2 = Input(shape=(1125,)) #ECMWF temp
+inputB1 = Input(shape=(8,)) #GEFS PCs
+inputB2 = Input(shape=(8,)) #ECMWF PCs
+# the first branch operates on the first input (Temp forecasts)
+x1 = Dense(1125*4, activation="relu")(inputA1)
+x1 = Model(inputs=inputA1, outputs=x1)
+Dropout(0.3)
+x2 = Dense(1125*4, activation="relu")(inputA2)
+x2 = Model(inputs=inputA2, outputs=x2)
+Dropout(0.3)
+# the second branch opreates on the second input (PCs)
+y1 = Dense(20, activation="relu")(inputB1)
+y1 = Dense(200, activation="relu")(y1)
+y1 = Dense(2000, activation="relu")(inputB1)
+y1 = Model(inputs=inputB1, outputs=y1)
+Dropout(0.3)
+y2 = Dense(20, activation="relu")(inputB2)
+y2 = Dense(200, activation="relu")(y2)
+y2 = Dense(2000, activation="relu")(inputB2)
+y2 = Model(inputs=inputB2, outputs=y2)
+Dropout(0.3)
+# combine the output of the 4 inputs
+combined1 = concatenate([x1.output, x2.output])
+combined2 = concatenate([y1.output, y2.output])
+combined3 = concatenate([combined1, combined2])
+# combined outputs
+z = Dense(1125, activation="sigmoid")(combined3)
+# our model will accept the inputs of the two branches and
+# then output a single value
+Model = Model(inputs=[x1.input,x2.input, y1.input,y2.input], outputs=z)
+Model.summary()#print a summary of the model
+#compile
+optimizer = 'adam'#keras.optimizers.RMSprop(0.0001)
+Model.compile(loss='binary_crossentropy',optimizer=optimizer,metrics=['mae',hss_metric])
+
+#TensorBoard line to save the model metrics; Change the name of the file if you like
+t_board = [keras.callbacks.TensorBoard(log_dir='./my_tf_dir/prob_'+datetime.now().strftime("%Y%m%d-%H:%M:%S"),histogram_freq=1,embeddings_freq=1)]
+#t_board = [keras.callbacks.TensorBoard(log_dir='./my_tf_dir/test_data_start',histogram_freq=1,embeddings_freq=1)]
+training_output=Model.fit(x=[train_model_temp_ECMWF,train_model_temp_GEFS,train_pcs_ECMWF,train_pcs_GEFS],y=train_predictand,
+				validation_data=([test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS],test_predictand),
+				batch_size=batch_size,epochs=epochs, shuffle=True, verbose=1,callbacks =[t_board])
+#evaluate the testing (validation) data
+evaluate_output=Model.evaluate(x=[test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS],y=test_predictand,batch_size=batch_size,callbacks =[t_board])
+
+#HSS for testing data
+sample_num=51
+test_prediction=Model.predict([test_model_temp_ECMWF,test_model_temp_GEFS,test_pcs_ECMWF,test_pcs_GEFS])
+test_forecasts=test_prediction.reshape((sample_num,lon_c,lat_c),order='F')
+test_forecasts_fitted= (np.round(test_forecasts)-.01)#assigning  pos (.99) or neg (-.01) for above or below average
+test_obs=output_anomalies.values[test_ints,:,:]
+#score the samples
+hss_NN=np.zeros(sample_num)
+for day in range(sample_num):
+	hss=HSS_calc(test_forecasts_fitted[day,:,:],test_obs[day,:,:],US_mask,np.arange(15, 75.5,degree))
+	hss_NN[day]=hss
+print(hss_NN.mean())
+
+#############################################################################
+"""
+Compare the NN skill scores to the LinearRegression (LR) and GEFS skill score
+Make sure the dates you are testing are the same
+"""
+
+#HSS for Linear regression
+LR_map=lin_regs_NA.isel(date=test_ints).values #scaler_temp.inverse_transform(lin_regs.recon).reshape((51,45,25),order='F')
+#test_obs=scaler_temp.inverse_transform(test_predictand).reshape((sample_num,lon_c,lat_c),order='F')
+test_obs=output_anomalies.isel(date=test_ints).values
+hss_LR=np.zeros(test_obs.shape[0])
+for day in range(test_obs.shape[0]):
+	hss=HSS_calc(LR_map[day,:,:],test_obs[day,:,:],US_mask,np.arange(15, 75.5, degree))
+	hss_LR[day]=hss
+print(hss_LR.mean())
+
+
+####################3333
+#score the models (GEFS, ECMWF, combo)
+models_raw=((GEFS_temp_hindcast+ECMWF_temp_hindcast)/2).sel(int_date=date_list)#aline dates
+model_forecast=models_raw.tmean.isel(int_date=test_ints).sel(lat=slice(15,75)).sel(lon=slice(190,300)).transpose('int_date','lon','lat').values
+test_obs=(output_anomalies).values[test_ints,:,:].reshape((sample_num,45,25),order='F')
+model_type=='Ens_mean'
+hss_model_ens=np.zeros(sample_num)
+for day in range(sample_num):
+	hss=HSS_calc(model_forecast[day,:,:],test_obs[day,:,:],US_mask,np.arange(15, 75.5, 2.5))
+	hss_model_ens[day]=hss
+print(hss_model_ens.mean())
+
+print(np.corrcoef(hss_model_ens,hss_NN)[0,1])
+###############################################################################################
+"""
+PLOTS:
+
+Plot sample forecast:
+-ML model output
+-GEFS raw output
+-LR output
+-Observations
+"""
+import matplotlib.pyplot as plt
+import matplotlib.colors
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from cartopy.mpl.ticker import LongitudeFormatter, LatitudeFormatter
+import matplotlib.gridspec as gridspec
+
+scale=100
+lon = np.arange(190, 300.5,degree)#[lon_ints]
+lat = np.arange(15, 75.5,degree)#[lat_ints2]
+crs = ccrs.PlateCarree(central_longitude=360)
+n=30; x = 0.45
+cmap = plt.cm.RdBu_r
+lower = cmap(np.linspace(0, x-.05, n))
+white = np.ones((10,4))
+upper = cmap(np.linspace(1-x, 1, n))
+colors = np.vstack((lower, white, upper))
+tmap = matplotlib.colors.LinearSegmentedColormap.from_list('map_white', colors)
+
+fig, axarr = plt.subplots(3, 1, figsize=(14, 8), subplot_kw={'projection': crs}) #make the map bigger than the table
+#hemispheric view
+ax1=axarr[0,0];ax2=axarr[1,0];ax3=axarr[0,1];ax4=axarr[1,1]
+def plot_background(ax1):
+	#ax1.set_extent([-180, 177.5, -20.0, 90], crs=ccrs.PlateCarree())
+	ax1.xaxis.set_major_formatter(LongitudeFormatter(zero_direction_label=True))
+	ax1.yaxis.set_major_formatter(LatitudeFormatter())
+	ax1.add_feature(cfeature.COASTLINE, linewidth=0.5)
+	ax1.add_feature(cfeature.STATES, linewidth=0.5)
+	ax1.add_feature(cfeature.BORDERS, linewidth=0.5)
+	ax1.gridlines(crs, linewidth=0.5, color='lightgray', linestyle='--')
+plot_background(ax1);plot_background(ax2);plot_background(ax3);plot_background(ax4)
+pick_date=-13
+#print_skill=[hss_NN[pick_date],hss_model_ens[pick_date],hss_LR[pick_date]]
+#ax1.set_title('Prob NN Week 3/4 Forecast\n HSS: '+str(round(print_skill[0],2)))
+cf1 = ax1.contourf(lon, lat, test_forecasts[pick_date,:,:].transpose(), 17,cmap=tmap,levels=np.linspace(0,1,17),vmax=1, vmin=0,extend='both')
+#ax2.set_title('GEFS ENS Mean Week 3/4 Forecast\n HSS: '+str(round(print_skill[1],2)))
+cf2 = ax2.contourf(lon, lat,  model_forecast[pick_date,:,:].transpose(), 17,cmap=tmap,levels=np.linspace(-1*scale,scale,17),vmax=scale, vmin=-1*scale,extend='both')
+ax4.set_title('14-day Observation')
+cf4 = ax4.contourf(lon, lat,  test_obs[pick_date,:,:].transpose(), 17,cmap=tmap,levels=np.linspace(-1*scale,scale,17),vmax=scale, vmin=-1*scale,extend='both')
+#cbar = fig.colorbar(cf1, orientation='horizontal', ax=ax2,extend='both')# shrink=.5)
+#cbar.outline.set_edgecolor('black');cbar.outline.set_linewidth(.5)
+#cbar.ax.set_xlabel('Anomaly (C)', fontsize='x-large')
+#plt.legend()
+fig.suptitle('Week 3/4 Temp Forecast', fontsize='18')
+#plt.savefig(project_dir+'model_NN_NN2_obs_prob_ex.png')
+plt.show()
+
+"""
+Caluclate and Plot HSS Maps
+At each grid point, find the average HSS for each Test hindcast. Then plot
+Make sure the same dates (samples) are being used when comparing the NN model and other tools
+"""
+###
+def HSS_map(forecast,observation):
+	heidke=np.sign(forecast*observation)
+	heidke=(heidke+1)/2 #makes -1 values (wrong forecast) 0
+	#H=np.nansum(heidke_good*cos_good);T=np.nansum(cos_good); E=T/2
+	H=np.nansum(heidke);T=np.nansum(heidke.shape[0]); E=T/2
+	hss=(100*(H-E)/(T-E))
+	return hss
+
+#skill map
+#model_type is set above when you run a model
+skill_hss={}
+if model_type=='LR':
+	LR_map=lin_regs_NA.isel(date=test_ints).values #scaler_temp.inverse_transform(lin_regs.recon).reshape((51,45,25),order='F')
+	test_map=LR_map
+elif model_type=='ANN':
+	test_prediction=test_prediction#Model.predict(test_pcs)
+	test_map=scaler_temp.inverse_transform(test_prediction).reshape((sample_num,lon_c,lat_c),order='F')
+elif model_type=='prob':
+	test_map=test_prediction.reshape((sample_num,lon_c,lat_c),order='F')
+	test_map= (np.round(test_map)-.01)#assi#reanalysis_truth=scaler_temp.inverse_transform(test_predictand).reshape((sample_num,lon_c,lat_c),order='F')
+elif model_type=='Ens_mean':
+	test_map=forecast_map
+
+reanalysis_truth=output_anomalies.isel(date=test_ints).values
+hss=np.zeros(test_map.shape[1:3])
+for i in range(test_map.shape[1]):
+		for j in range(test_map.shape[2]):
+			hss[i,j]=HSS_map(test_map[:,i,j],reanalysis_truth[:,i,j])
+hss[hss==-100]=np.nan#kick out any missing data samples (only a concern for precip)
+skill_hss= hss
+
+############
+#plot
+lon = np.arange(190, 300.5,degree)#[lon_ints]
+lat = np.arange(15, 75.5,degree)#[lat_ints2]
+#Plot it up
+n=30; x = 0.45
+cmap = plt.cm.RdYlBu_r#BrBG#RdYlBu_r
+lower = cmap(np.linspace(0, x-.05, n))
+white = np.ones((10,4))
+upper = cmap(np.linspace(1-x, 1, n))
+colors = np.vstack((lower, white, upper))
+tmap = matplotlib.colors.LinearSegmentedColormap.from_list('map_white', colors)
+# lon = np.arange(0, 360, 1.0)
+# lat = np.arange(-20, 90.5, 1.0)
+map_projection = ccrs.PlateCarree(central_longitude=330);crs=map_projection
+data_projection = ccrs.PlateCarree(central_longitude=0)
+
+# AX FEATURES : CARTOPY
+def plot_background(ax):
+	ax.set_extent([30, -180, 10.0, 80], crs=map_projection)
+	ax.add_feature(cfeature.COASTLINE, linewidth=0.5)
+	ax.add_feature(cfeature.STATES, linewidth=0.5)
+	ax.add_feature(cfeature.BORDERS, linewidth=0.5)
+	return (ax)
+# PLOTS
+fig, axarr = plt.subplots(1, 1, figsize=(14, 7), subplot_kw={'projection': map_projection})
+gridspec.GridSpec(2,4)
+fig.subplots_adjust(hspace=0.0)
+plt.style.use('ggplot')
+# 'FLATTEN' used to loop through suplot array which could be 2d (i.e. 4 rows, 2 columns)
+gl = axarr.gridlines(crs, linewidth=0.5, color='lightgray', linestyle='--')
+plot_background(axarr)
+cf = axarr.contourf(lon,lat, (skill_hss*US_mask).transpose(), 17, transform=data_projection,cmap=tmap,levels=np.linspace(-40,40,17),vmax=40, vmin=-40,extend='both')
+#fig.suptitle('Temperature GEFS and ECWMF Blend '+model_type+' Week 3/4 HSS Map',size=24)
+fig.suptitle('Temperature HSS: '+model_type,size=24)
+#fig.tight_layout(pad=1,h_pad=1.0,w_pad=1.0)
+fig.subplots_adjust(bottom=.2)
+cax = fig.add_axes([0.2, 0.1, 0.6, 0.05])
+cbar = fig.colorbar(cf,cax=cax,orientation='horizontal',extend='both')
+cbar.outline.set_edgecolor('black');cbar.outline.set_linewidth(.5)
+cbar.ax.set_xlabel('HSS', fontsize='x-large')
+#plt.savefig(project_dir+'Temp_'+model_type+'_HSS_map_ECWMF_GEFS_blend.png',dpi =150)
+plt.show()
